@@ -32,6 +32,7 @@ GRID_DARK = (22, 23, 30)
 GREEN = (80, 220, 120)
 DARK_GREEN = (46, 160, 88)
 RED = (235, 80, 80)
+CYAN = (90, 220, 235)
 YELLOW = (240, 200, 80)
 WHITE = (240, 240, 240)
 GREY = (140, 142, 155)
@@ -39,6 +40,9 @@ GREY = (140, 142, 155)
 HIGHSCORE_FILE = Path(__file__).with_name("highscore.json")
 SCORES_FILE = Path(__file__).with_name("scores.json")
 TOP_N = 5                     # 排行榜保存最近最好的 5 次成绩
+BONUS_EVERY = 3               # 每吃 3 个食物出现一个特殊食物
+BONUS_POINTS = 3              # 特殊食物额外加分
+BONUS_CHANCE = 0.7            # 出现特殊食物的概率
 
 # 四个方向: (x 变化, y 变化)
 UP = (0, -1)
@@ -130,25 +134,28 @@ class SnakeGame:
 
     def reset(self):
         """把游戏恢复到初始状态(开始界面的默认状态)。"""
-        center = (COLS // 2, ROWS // 2)
-        self.snake = [center, (center[0] - 1, center[1]), (center[0] - 2, center[1])]
-        self.direction = RIGHT
-        self.next_direction = RIGHT
-        self.food = self.spawn_food()
-        self.score = 0
+        self.prepare_round()
         self.state = "menu"
-        self.rank_text = ""
 
     def start(self, level):
         """按选定的难度开始新的一局。"""
         self.level = level
+        self.prepare_round()
+        self.state = "playing"
+
+    def prepare_round(self):
+        """重置棋盘上的所有东西，准备新的一局。"""
         center = (COLS // 2, ROWS // 2)
         self.snake = [center, (center[0] - 1, center[1]), (center[0] - 2, center[1])]
         self.direction = RIGHT
         self.next_direction = RIGHT
-        self.food = self.spawn_food()
+        self.food = None
+        self.bonus_food = None
+        self.eaten = 0
+        self.bonus_got = 0
+        self.food, self.bonus_food = self.spawn_food()
         self.score = 0
-        self.state = "playing"
+        self.rank_text = ""
 
     @property
     def level_name(self):
@@ -161,14 +168,27 @@ class SnakeGame:
         return min(base + self.score * accel, MAX_SPEED)
 
     def spawn_food(self):
-        """在空的格子里随机放一个食物。"""
+        """返回 (普通食物, 特殊食物或 None)。特殊食物偶尔出现，吃了额外加分。"""
+        food = self.random_empty_cell()
+        bonus = None
+        if self.eaten % BONUS_EVERY == BONUS_EVERY - 1 and random.random() < BONUS_CHANCE:
+            bonus = self.random_empty_cell(extra_used=food)
+        return food, bonus
+
+    def random_empty_cell(self, extra_used=None):
+        """在所有空格子里随机取一个。"""
+        used = set(self.snake)
+        if extra_used:
+            used.add(extra_used)
+        if self.food:
+            used.add(self.food)
         empty = [
             (x, y)
             for x in range(COLS)
             for y in range(ROWS)
-            if (x, y) not in self.snake
+            if (x, y) not in used
         ]
-        return random.choice(empty)
+        return random.choice(empty) if empty else None
 
     # ---------- 逻辑更新 ----------
     def step(self):
@@ -190,7 +210,15 @@ class SnakeGame:
 
         if new_head == self.food:
             self.score += 1
-            self.food = self.spawn_food()
+            self.eaten += 1
+            if self.bonus_food:      # 吃掉普通食物时特殊食物消失
+                self.bonus_food = None
+            self.food, self.bonus_food = self.spawn_food()
+        elif self.bonus_food and new_head == self.bonus_food:
+            self.score += BONUS_POINTS
+            self.bonus_got += 1
+            self.eaten += 1
+            self.bonus_food = None
         else:
             self.snake.pop()
 
@@ -225,11 +253,18 @@ class SnakeGame:
                     rect = pygame.Rect(x * CELL, y * CELL, CELL, CELL)
                     pygame.draw.rect(self.screen, GRID_LIGHT, rect)
 
-    def draw_cell(self, pos, color, inset=1):
+    def draw_cell(self, pos, color, inset=1, border=None):
         rect = pygame.Rect(
             pos[0] * CELL + inset, pos[1] * CELL + inset, CELL - inset * 2, CELL - inset * 2
         )
         pygame.draw.rect(self.screen, color, rect, border_radius=3)
+        if border:
+            pygame.draw.rect(self.screen, border, rect, width=2, border_radius=3)
+
+    def draw_bonus_food(self):
+        """特殊食物：青色方块 + 金色边框，吃了额外加分。"""
+        if self.bonus_food:
+            self.draw_cell(self.bonus_food, CYAN, border=YELLOW)
 
     def draw_hud(self):
         score_text = self.font.render(f"分数: {self.score}", True, WHITE)
@@ -239,7 +274,9 @@ class SnakeGame:
         self.screen.blit(best_text, (WIDTH - best_text.get_width() - 10, 12))
 
         info = self.small_font.render(
-            f"难度: {self.level_name}  速度: {self.speed:.1f}", True, GREY
+            f"难度: {self.level_name}  速度: {self.speed:.1f}  特殊食物 x{self.bonus_got}",
+            True,
+            GREY,
         )
         self.screen.blit(info, info.get_rect(center=(WIDTH // 2, 18)))
 
@@ -297,7 +334,9 @@ class SnakeGame:
             return
 
         self.draw_background()
-        self.draw_cell(self.food, RED)
+        if self.food:
+            self.draw_cell(self.food, RED)
+        self.draw_bonus_food()
 
         for index, segment in enumerate(self.snake):
             color = GREEN if index == 0 else DARK_GREEN
@@ -308,7 +347,9 @@ class SnakeGame:
         if self.state == "over":
             self.draw_center_text([("GAME OVER", self.big_font)], color=RED)
             tip = self.font.render(
-                f"本局 {self.score} 分 · R 重来 / M 选难度 / ESC 退出", True, WHITE
+                f"本局 {self.score} 分 · 特殊食物 {self.bonus_got} 个 · R 重来 / M 选难度",
+                True,
+                WHITE,
             )
             self.screen.blit(tip, tip.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 44)))
             if self.rank_text:
