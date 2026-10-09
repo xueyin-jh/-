@@ -37,6 +37,8 @@ WHITE = (240, 240, 240)
 GREY = (140, 142, 155)
 
 HIGHSCORE_FILE = Path(__file__).with_name("highscore.json")
+SCORES_FILE = Path(__file__).with_name("scores.json")
+TOP_N = 5                     # 排行榜保存最近最好的 5 次成绩
 
 # 四个方向: (x 变化, y 变化)
 UP = (0, -1)
@@ -76,6 +78,38 @@ def save_highscore(score):
         pass  # 没有写权限时静默忽略，不影响游戏
 
 
+def load_leaderboard():
+    """读取排行榜：[(分数, 难度名), ...]，按分数从高到低。"""
+    try:
+        with open(SCORES_FILE, "r", encoding="utf-8") as fp:
+            data = json.load(fp)
+        entries = [(int(item["score"]), str(item["level"])) for item in data]
+        return entries[:TOP_N]
+    except (OSError, ValueError, TypeError, KeyError):
+        return []
+
+
+def save_leaderboard(entries):
+    """保存排行榜到本地文件。"""
+    try:
+        with open(SCORES_FILE, "w", encoding="utf-8") as fp:
+            json.dump(
+                [{"score": s, "level": name} for s, name in entries[:TOP_N]],
+                fp,
+                ensure_ascii=False,
+                indent=2,
+            )
+    except OSError:
+        pass
+
+
+def add_to_leaderboard(entries, score, level_name):
+    """把新成绩插入排行榜，返回新的榜单(最多 TOP_N 条)。"""
+    entries = entries + [(score, level_name)]
+    entries.sort(key=lambda item: item[0], reverse=True)
+    return entries[:TOP_N]
+
+
 class SnakeGame:
     """贪吃蛇游戏主逻辑。"""
 
@@ -88,6 +122,8 @@ class SnakeGame:
         self.small_font = pygame.font.SysFont("consolas", 18)
         self.big_font = pygame.font.SysFont("consolas", 48, bold=True)
         self.highscore = load_highscore()
+        self.leaderboard = load_leaderboard()
+        self.rank_text = ""
         self.level = 2
         self.state = "menu"       # menu / playing / paused / over
         self.reset()
@@ -101,6 +137,7 @@ class SnakeGame:
         self.food = self.spawn_food()
         self.score = 0
         self.state = "menu"
+        self.rank_text = ""
 
     def start(self, level):
         """按选定的难度开始新的一局。"""
@@ -158,11 +195,25 @@ class SnakeGame:
             self.snake.pop()
 
     def end_game(self):
-        """结束游戏，并顺手更新最高分。"""
+        """结束游戏，并顺手更新最高分和排行榜。"""
         self.state = "over"
         if self.score > self.highscore:
             self.highscore = self.score
             save_highscore(self.highscore)
+        # 只记录有得分的成绩，避免排行榜全是 0 分
+        if self.score > 0:
+            self.leaderboard = add_to_leaderboard(
+                self.leaderboard, self.score, self.level_name
+            )
+            save_leaderboard(self.leaderboard)
+            self.rank_text = self.build_rank_text()
+
+    def build_rank_text(self):
+        """返回"第 N 名"提示，没进榜返回空字符串。"""
+        for index, (score, level_name) in enumerate(self.leaderboard, start=1):
+            if score == self.score and level_name == self.level_name:
+                return f"进入排行榜第 {index} 名！"
+        return ""
 
     # ---------- 绘制 ----------
     def draw_background(self):
@@ -200,23 +251,44 @@ class SnakeGame:
             y = HEIGHT // 2 - (total * 30) // 2 + index * 44
             self.screen.blit(surface, surface.get_rect(center=(WIDTH // 2, y)))
 
+    def draw_leaderboard(self):
+        """在开始界面右侧画出前 5 名成绩。"""
+        panel_x = WIDTH - 210
+        panel_y = HEIGHT // 2 - 95
+        title = self.small_font.render(f"排行榜 TOP{TOP_N}", True, YELLOW)
+        self.screen.blit(title, (panel_x, panel_y))
+
+        if not self.leaderboard:
+            empty = self.small_font.render("还没有成绩，快来玩一局", True, GREY)
+            self.screen.blit(empty, (panel_x, panel_y + 28))
+            return
+
+        for index, (score, level_name) in enumerate(self.leaderboard, start=1):
+            text = f"{index}. {score:>3} 分  {level_name}"
+            self.screen.blit(
+                self.small_font.render(text, True, WHITE), (panel_x, panel_y + 20 + index * 24)
+            )
+
     def draw_menu(self):
         self.screen.fill(BACKGROUND)
         title = self.big_font.render("SNAKE 贪吃蛇", True, GREEN)
-        self.screen.blit(title, title.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 90)))
+        self.screen.blit(title, title.get_rect(center=(WIDTH // 2 - 90, HEIGHT // 2 - 90)))
 
         for index, (key, (name, speed, accel)) in enumerate(LEVELS.items()):
             text = f"{key}. {name}   起始速度 {speed:.0f}"
             color = YELLOW if key == self.level else WHITE
             surface = self.font.render(text, True, color)
             self.screen.blit(
-                surface, surface.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 10 + index * 40))
+                surface,
+                surface.get_rect(center=(WIDTH // 2 - 90, HEIGHT // 2 - 10 + index * 40)),
             )
 
         tip = self.small_font.render("按 1 / 2 / 3 选择难度并开始   ESC 退出", True, GREY)
-        self.screen.blit(tip, tip.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 130)))
+        self.screen.blit(tip, tip.get_rect(center=(WIDTH // 2 - 90, HEIGHT // 2 + 130)))
         best = self.small_font.render(f"历史最高分: {self.highscore}", True, YELLOW)
-        self.screen.blit(best, best.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 165)))
+        self.screen.blit(best, best.get_rect(center=(WIDTH // 2 - 90, HEIGHT // 2 + 160)))
+
+        self.draw_leaderboard()
 
     def draw(self):
         if self.state == "menu":
@@ -239,6 +311,9 @@ class SnakeGame:
                 f"本局 {self.score} 分 · R 重来 / M 选难度 / ESC 退出", True, WHITE
             )
             self.screen.blit(tip, tip.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 44)))
+            if self.rank_text:
+                rank = self.small_font.render(self.rank_text, True, YELLOW)
+                self.screen.blit(rank, rank.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 78)))
         elif self.state == "paused":
             self.draw_center_text([("已暂停", self.big_font)], color=YELLOW)
             tip = self.font.render("按空格继续 / M 回到开始界面", True, WHITE)
